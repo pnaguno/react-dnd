@@ -1,0 +1,95 @@
+{
+  "info": {
+    "name": "CMS Electronic PA Submission System",
+    "description": "API collection for CMS PA System",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwt_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/../health",
+              "host": ["{{base_url}}"],
+              "path": ["..", "health"]
+            }
+          }
+        },
+        {
+          "name": "Readiness Check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/../health/ready",
+              "host": ["{{base_url}}"],
+              "path": ["..", "health", "ready"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+,
+    {
+      "name": "PA Requests",
+      "item": [
+        {
+          "name": "Create PA Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priority\": \"standard\",\n  \"patient\": {\n    \"id\": \"patient-123\",\n    \"demographics\": {\n      \"name\": {\n        \"family\": \"Smith\",\n        \"given\": [\"John\"]\n      },\n      \"birthDate\": \"1980-01-15\",\n      \"gender\": \"male\",\n      \"address\": {\n        \"line\": [\"123 Main St\"],\n        \"city\": \"Boston\",\n        \"state\": \"MA\",\n        \"postalCode\": \"02101\"\n      }\n    },\n    \"memberId\": \"MEM123456789\",\n    \"coverageInfo\": [{\n      \"id\": \"coverage-1\",\n      \"status\": \"active\",\n      \"payor\": {\n        \"id\": \"payer-001\",\n        \"name\": \"Blue Cross\",\n        \"identifier\": \"BCBS-MA\"\n      }\n    }]\n  },\n  \"requestingProvider\": {\n    \"npi\": \"1234567890\",\n    \"name\": {\n      \"family\": \"Johnson\",\n      \"given\": [\"Sarah\"],\n      \"prefix\": [\"Dr.\"]\n    },\n    \"organization\": {\n      \"id\": \"org-001\",\n      \"name\": \"Boston Medical\",\n      \"address\": {\n        \"line\": [\"1 Medical Center\"],\n        \"city\": \"Boston\",\n        \"state\": \"MA\",\n        \"postalCode\": \"02118\"\n      },\n      \"active\": true\n    },\n    \"contactInfo\": {\n      \"phone\": \"+1-555-0199\",\n      \"email\": \"dr.johnson@example.com\"\n    }\n  },\n  \"serviceRequest\": {\n    \"serviceType\": {\n      \"coding\": [{\n        \"system\": \"http://www.ama-assn.org/go/cpt\",\n        \"code\": \"93000\",\n        \"display\": \"ECG\"\n      }]\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pa-requests",
+              "host": ["{{base_url}}"],
+              "path": ["pa-requests"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
