@@ -1,0 +1,2565 @@
+openapi: 3.0.3
+info:
+  title: CMS Electronic PA Submission System API - Enhanced
+  description: |
+    Comprehensive API for automated Prior Authorization (PA) request submission with electronic workflows.
+    
+    ## Features
+    - **Electronic PA Submission**: Automated submission using HL7 FHIR R4 and X12 278 standards
+    - **Workflow Automation**: Intelligent rule-based workflows that minimize manual intervention
+    - **Payer Routing**: Automatic routing to correct payer endpoints with protocol selection
+    - **Retry Management**: Exponential backoff retry logic for failed submissions
+    - **CMS Compliance**: Built-in validation against CMS-0057-F final rule requirements
+    - **Audit Trails**: Comprehensive logging for regulatory compliance
+    - **Real-time Status**: Track submission progress and status changes
+    
+    ## Authentication
+    All endpoints (except health checks) require JWT authentication via Bearer token.
+    
+  version: 2.0.0
+  contact:
+    name: API Support
+    email: support@cms-pa-system.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Development server
+  - url: https://api.cms-pa-system.com/api/v1
+    description: Production server
+
+tags:
+  - name: Health
+    description: Health check and readiness endpoints
+  - name: PA Requests
+    description: Prior Authorization request management and submission
+  - name: Workflows
+    description: Workflow rule management and automation
+  - name: Payer Endpoints
+    description: Payer endpoint configuration and routing
+  - name: Retry Management
+    description: Submission retry tracking and management
+  - name: Validation
+    description: CMS compliance and payer-specific validation
+  - name: Audit
+    description: Audit trail and compliance logging
+  - name: Configuration
+    description: System configuration (Admin only)
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ==================== Health Endpoints ====================
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Check if the API is running and all services are operational
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: healthy
+                timestamp: "2024-02-05T10:30:00Z"
+                services:
+                  database: up
+                  messageQueue: up
+                  redis: up
+                  api: up
+
+  /health/ready:
+    get:
+      tags:
+        - Health
+      summary: Readiness check
+      description: Check if the API is ready to accept requests
+      operationId: getReadiness
+      security: []
+      responses:
+        '200':
+          description: System is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: System is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== PA Request Endpoints ====================
+  /pa-requests:
+    post:
+      tags:
+        - PA Requests
+      summary: Create a new PA request
+      description: |
+        Create a new Prior Authorization request. The system will automatically:
+        - Generate a unique tracking ID
+        - Evaluate workflow rules for auto-submission eligibility
+        - Trigger validation if eligible
+        - Publish events to message queue for async processing
+      operationId: createPARequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePARequestInput'
+            example:
+              priority: urgent
+              patient:
+                id: patient-123
+                demographics:
+                  name:
+                    use: official
+                    family: Smith
+                    given: [John, Michael]
+                  birthDate: "1980-01-15"
+                  gender: male
+                  address:
+                    use: home
+                    line: ["123 Main St", "Apt 4B"]
+                    city: Boston
+                    state: MA
+                    postalCode: "02101"
+                    country: US
+                  telecom:
+                    phone: "+1-555-0123"
+                    email: john.smith@example.com
+                memberId: MEM123456789
+                coverageInfo:
+                  - id: coverage-1
+                    status: active
+                    payor:
+                      id: payer-001
+                      name: Blue Cross Blue Shield
+                      identifier: BCBS-MA
+              requestingProvider:
+                npi: "1234567890"
+                name:
+                  use: official
+                  family: Johnson
+                  given: [Sarah]
+                  prefix: [Dr.]
+                organization:
+                  id: org-001
+                  name: Boston Medical Center
+                  address:
+                    line: ["1 Medical Center Place"]
+                    city: Boston
+                    state: MA
+                    postalCode: "02118"
+                  active: true
+                contactInfo:
+                  phone: "+1-555-0199"
+                  email: dr.johnson@bostonmedical.com
+                specialty: Cardiology
+              serviceRequest:
+                serviceType:
+                  coding:
+                    - system: http://www.ama-assn.org/go/cpt
+                      code: "93000"
+                      display: Electrocardiogram, routine ECG
+                  text: ECG
+                diagnosis:
+                  - code:
+                      coding:
+                        - system: http://hl7.org/fhir/sid/icd-10
+                          code: I25.10
+                          display: Atherosclerotic heart disease
+                    onsetDate: "2024-01-01"
+              notes: Patient experiencing chest pain
+      responses:
+        '201':
+          description: PA request created successfully
+          headers:
+            Location:
+              description: URL of the created PA request
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PARequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    get:
+      tags:
+        - PA Requests
+      summary: Search PA requests
+      description: Search and filter PA requests with pagination support
+      operationId: searchPARequests
+      parameters:
+        - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/PriorityFilter'
+        - $ref: '#/components/parameters/PatientIdFilter'
+        - $ref: '#/components/parameters/ProviderIdFilter'
+        - $ref: '#/components/parameters/TrackingIdFilter'
+        - $ref: '#/components/parameters/PayerIdFilter'
+        - $ref: '#/components/parameters/SubmissionMethodFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: PA requests retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PARequestList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /pa-requests/{id}:
+    get:
+      tags:
+        - PA Requests
+      summary: Get PA request by ID
+      description: Retrieve a specific PA request with full details including submission history and audit trail
+      operationId: getPARequest
+      parameters:
+        - $ref: '#/components/parameters/PARequestId'
+      responses:
+        '200':
+          description: PA request retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PARequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    
+    put:
+      tags:
+        - PA Requests
+      summary: Update PA request
+      description: Update an existing PA request. Only certain fields can be updated based on current status.
+      operationId: updatePARequest
+      parameters:
+        - $ref: '#/components/parameters/PARequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePARequestInput'
+      responses:
+        '200':
+          description: PA request updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PARequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict - Cannot update PA request in current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pa-requests/{id}/submit:
+    post:
+      tags:
+        - PA Requests
+      summary: Submit PA request to payer
+      description: |
+        Manually trigger submission of a PA request to the payer. The system will:
+        - Validate the request against CMS rules
+        - Route to the appropriate payer endpoint
+        - Select the correct protocol (FHIR or X12)
+        - Handle authentication and transmission
+        - Schedule retries if submission fails
+      operationId: submitPARequest
+      parameters:
+        - $ref: '#/components/parameters/PARequestId'
+      responses:
+        '200':
+          description: PA request submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionResult'
+        '400':
+          description: Validation failed or request not ready for submission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: Payer endpoint unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pa-requests/{id}/status:
+    get:
+      tags:
+        - PA Requests
+      summary: Get PA request status
+      description: Get the current status and submission progress of a PA request
+      operationId: getPARequestStatus
+      parameters:
+        - $ref: '#/components/parameters/PARequestId'
+      responses:
+        '200':
+          description: Status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PARequestStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pa-requests/{id}/cancel:
+    post:
+      tags:
+        - PA Requests
+      summary: Cancel PA request
+      description: Cancel a PA request and notify the payer if already submitted
+      operationId: cancelPARequest
+      parameters:
+        - $ref: '#/components/parameters/PARequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reason
+              properties:
+                reason:
+                  type: string
+                  description: Reason for cancellation
+      responses:
+        '200':
+          description: PA request cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  cancelledAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: Cannot cancel PA request in current status
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pa-requests/{id}/validate:
+    post:
+      tags:
+        - PA Requests
+      summary: Validate PA request
+      description: Manually trigger validation of a PA request against CMS and payer-specific rules
+      operationId: validatePARequest
+      parameters:
+        - $ref: '#/components/parameters/PARequestId'
+      responses:
+        '200':
+          description: Validation completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== Workflow Endpoints ====================
+  /workflows/rules:
+    get:
+      tags:
+        - Workflows
+      summary: List workflow rules
+      description: Get all workflow rules with optional filtering
+      operationId: listWorkflowRules
+      parameters:
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+        - name: ruleType
+          in: query
+          description: Filter by rule type
+          schema:
+            type: string
+            enum: [auto_submit, validation, routing, notification]
+      responses:
+        '200':
+          description: Workflow rules retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkflowRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Workflows
+      summary: Create workflow rule
+      description: Create a new workflow rule (Admin only)
+      operationId: createWorkflowRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflowRuleInput'
+      responses:
+        '201':
+          description: Workflow rule created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /workflows/rules/{id}:
+    get:
+      tags:
+        - Workflows
+      summary: Get workflow rule by ID
+      description: Retrieve a specific workflow rule
+      operationId: getWorkflowRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Workflow rule retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowRule'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags:
+        - Workflows
+      summary: Update workflow rule
+      description: Update an existing workflow rule (Admin only)
+      operationId: updateWorkflowRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkflowRuleInput'
+      responses:
+        '200':
+          description: Workflow rule updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Workflows
+      summary: Delete workflow rule
+      description: Delete a workflow rule (Admin only)
+      operationId: deleteWorkflowRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Workflow rule deleted successfully
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflows/rules/{id}/enable:
+    post:
+      tags:
+        - Workflows
+      summary: Enable workflow rule
+      description: Enable a disabled workflow rule (Admin only)
+      operationId: enableWorkflowRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Workflow rule enabled successfully
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflows/rules/{id}/disable:
+    post:
+      tags:
+        - Workflows
+      summary: Disable workflow rule
+      description: Disable an active workflow rule (Admin only)
+      operationId: disableWorkflowRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Workflow rule disabled successfully
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== Payer Endpoint Endpoints ====================
+  /payer-endpoints:
+    get:
+      tags:
+        - Payer Endpoints
+      summary: List payer endpoints
+      description: Get all configured payer endpoints
+      operationId: listPayerEndpoints
+      parameters:
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+        - name: supportsFHIR
+          in: query
+          description: Filter by FHIR support
+          schema:
+            type: boolean
+        - name: supportsX12
+          in: query
+          description: Filter by X12 support
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Payer endpoints retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PayerEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Payer Endpoints
+      summary: Create payer endpoint
+      description: Create a new payer endpoint configuration (Admin only)
+      operationId: createPayerEndpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePayerEndpointInput'
+      responses:
+        '201':
+          description: Payer endpoint created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayerEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /payer-endpoints/{id}:
+    get:
+      tags:
+        - Payer Endpoints
+      summary: Get payer endpoint by ID
+      description: Retrieve a specific payer endpoint configuration
+      operationId: getPayerEndpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Payer endpoint retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayerEndpoint'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags:
+        - Payer Endpoints
+      summary: Update payer endpoint
+      description: Update an existing payer endpoint configuration (Admin only)
+      operationId: updatePayerEndpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePayerEndpointInput'
+      responses:
+        '200':
+          description: Payer endpoint updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayerEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Payer Endpoints
+      summary: Delete payer endpoint
+      description: Delete a payer endpoint configuration (Admin only)
+      operationId: deletePayerEndpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Payer endpoint deleted successfully
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /payer-endpoints/{id}/test:
+    post:
+      tags:
+        - Payer Endpoints
+      summary: Test payer endpoint connection
+      description: Test connectivity and authentication with a payer endpoint (Admin only)
+      operationId: testPayerEndpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Connection test successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  responseTime:
+                    type: integer
+                    description: Response time in milliseconds
+                  testedAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: Connection test failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  error:
+                    type: string
+                  details:
+                    type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== Retry Management Endpoints ====================
+  /retries:
+    get:
+      tags:
+        - Retry Management
+      summary: List retry queue entries
+      description: Get all retry queue entries with optional filtering
+      operationId: listRetries
+      parameters:
+        - name: status
+          in: query
+          description: Filter by retry status
+          schema:
+            type: string
+            enum: [pending, in_progress, exhausted, cancelled]
+        - name: requestId
+          in: query
+          description: Filter by PA request ID
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Retry entries retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RetryEntry'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /retries/{id}:
+    get:
+      tags:
+        - Retry Management
+      summary: Get retry entry by ID
+      description: Retrieve a specific retry queue entry
+      operationId: getRetryEntry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Retry entry retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryEntry'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /retries/{id}/cancel:
+    post:
+      tags:
+        - Retry Management
+      summary: Cancel retry attempts
+      description: Cancel pending retry attempts for a PA request
+      operationId: cancelRetry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Retry cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /retries/{id}/retry-now:
+    post:
+      tags:
+        - Retry Management
+      summary: Trigger immediate retry
+      description: Manually trigger an immediate retry attempt (Admin only)
+      operationId: retryNow
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Retry triggered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== Validation Endpoints ====================
+  /validation/rules:
+    get:
+      tags:
+        - Validation
+      summary: List validation rules
+      description: Get all CMS and payer-specific validation rules
+      operationId: listValidationRules
+      parameters:
+        - name: ruleType
+          in: query
+          description: Filter by rule type
+          schema:
+            type: string
+            enum: [cms_compliance, payer_specific, data_format, business_rule]
+        - name: payerId
+          in: query
+          description: Filter by payer ID for payer-specific rules
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Validation rules retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ValidationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==================== Audit Endpoints ====================
+  /audit/trail:
+    get:
+      tags:
+        - Audit
+      summary: Get audit trail
+      description: Retrieve audit trail entries with filtering and pagination
+      operationId: getAuditTrail
+      parameters:
+        - name: entityType
+          in: query
+          description: Filter by entity type
+          schema:
+            type: string
+            enum: [pa_request, workflow, submission, retry, configuration]
+        - name: entityId
+          in: query
+          description: Filter by entity ID
+          schema:
+            type: string
+            format: uuid
+        - name: action
+          in: query
+          description: Filter by action type
+          schema:
+            type: string
+        - name: actorId
+          in: query
+          description: Filter by actor ID
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          description: Filter by start date
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: Filter by end date
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Audit trail retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /audit/trail/{id}:
+    get:
+      tags:
+        - Audit
+      summary: Get audit entry by ID
+      description: Retrieve a specific audit trail entry
+      operationId: getAuditEntry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Audit entry retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEntry'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ==================== Configuration Endpoints ====================
+  /config:
+    get:
+      tags:
+        - Configuration
+      summary: Get system configuration
+      description: Retrieve system configuration (Admin only)
+      operationId: getConfiguration
+      responses:
+        '200':
+          description: Configuration retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfiguration'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /config/{key}:
+    get:
+      tags:
+        - Configuration
+      summary: Get configuration value
+      description: Retrieve a specific configuration value (Admin only)
+      operationId: getConfigurationValue
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Configuration value retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                  value:
+                    type: object
+                  description:
+                    type: string
+                  category:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    put:
+      tags:
+        - Configuration
+      summary: Update configuration value
+      description: Update a specific configuration value (Admin only)
+      operationId: updateConfigurationValue
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - value
+              properties:
+                value:
+                  type: object
+                  description: Configuration value (structure depends on key)
+      responses:
+        '200':
+          description: Configuration updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /config/reload:
+    post:
+      tags:
+        - Configuration
+      summary: Reload configuration
+      description: Reload configuration from database without restart (Admin only)
+      operationId: reloadConfiguration
+      responses:
+        '200':
+          description: Configuration reloaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  reloadedAt:
+                    type: string
+                    format: date-time
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for authentication. Include in Authorization header as "Bearer {token}"
+
+  parameters:
+    PARequestId:
+      name: id
+      in: path
+      required: true
+      description: PA request unique identifier
+      schema:
+        type: string
+        format: uuid
+    
+    StatusFilter:
+      name: status
+      in: query
+      description: Filter by status (can specify multiple)
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/PAStatus'
+    
+    PriorityFilter:
+      name: priority
+      in: query
+      description: Filter by priority
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/Priority'
+    
+    PatientIdFilter:
+      name: patientId
+      in: query
+      description: Filter by patient ID
+      schema:
+        type: string
+    
+    ProviderIdFilter:
+      name: providerId
+      in: query
+      description: Filter by provider NPI
+      schema:
+        type: string
+        pattern: '^[0-9]{10}$'
+    
+    TrackingIdFilter:
+      name: trackingId
+      in: query
+      description: Filter by tracking ID
+      schema:
+        type: string
+        pattern: '^PA-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    
+    PayerIdFilter:
+      name: payerId
+      in: query
+      description: Filter by payer ID
+      schema:
+        type: string
+    
+    SubmissionMethodFilter:
+      name: submissionMethod
+      in: query
+      description: Filter by submission method
+      schema:
+        $ref: '#/components/schemas/SubmissionMethod'
+    
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of results to return
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 100
+    
+    Offset:
+      name: offset
+      in: query
+      description: Number of results to skip for pagination
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+
+
+  responses:
+    BadRequest:
+      description: Bad Request - Invalid input data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    
+    Unauthorized:
+      description: Unauthorized - Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Unauthorized
+            message: Missing or invalid authentication token
+    
+    Forbidden:
+      description: Forbidden - Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Forbidden
+            message: Admin role required for this operation
+    
+    NotFound:
+      description: Not Found - Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Not Found
+            message: Resource not found
+    
+    TooManyRequests:
+      description: Too Many Requests - Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Too Many Requests
+            message: Rate limit exceeded. Please try again later.
+      headers:
+        X-RateLimit-Limit:
+          description: Maximum requests allowed per window
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          description: Remaining requests in current window
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          description: Time when rate limit resets (Unix timestamp)
+          schema:
+            type: integer
+
+
+  schemas:
+    # ==================== Enums ====================
+    PAStatus:
+      type: string
+      enum:
+        - draft
+        - pending-validation
+        - validated
+        - submitted
+        - in-review
+        - approved
+        - denied
+        - more-info-required
+        - cancelled
+        - error
+      description: |
+        PA request lifecycle status:
+        - draft: Initial state, not yet validated
+        - pending-validation: Validation in progress
+        - validated: Passed validation, ready for submission
+        - submitted: Successfully submitted to payer
+        - in-review: Under review by payer
+        - approved: Approved by payer
+        - denied: Denied by payer
+        - more-info-required: Payer requires additional information
+        - cancelled: Cancelled by provider
+        - error: Submission or processing error
+
+    Priority:
+      type: string
+      enum:
+        - urgent
+        - standard
+      description: |
+        Priority level per CMS requirements:
+        - urgent: 72 hour response required
+        - standard: 7 day response required
+
+    SubmissionMethod:
+      type: string
+      enum:
+        - fhir
+        - x12
+      description: |
+        Electronic transmission format:
+        - fhir: HL7 FHIR R4 (Da Vinci PAS)
+        - x12: X12 278 EDI transaction
+
+    RetryStatus:
+      type: string
+      enum:
+        - pending
+        - in_progress
+        - exhausted
+        - cancelled
+      description: |
+        Retry queue entry status:
+        - pending: Waiting for next retry attempt
+        - in_progress: Retry currently being attempted
+        - exhausted: Maximum retries reached
+        - cancelled: Retry cancelled manually
+
+    ErrorCategory:
+      type: string
+      enum:
+        - validation
+        - network
+        - authentication
+        - authorization
+        - system
+        - payer
+      description: |
+        Error categorization for retry logic:
+        - validation: Data validation errors (non-retryable)
+        - network: Network connectivity errors (retryable)
+        - authentication: Authentication failures (non-retryable)
+        - authorization: Authorization failures (non-retryable)
+        - system: System/server errors (retryable)
+        - payer: Payer-specific errors (varies)
+
+
+    # ==================== Common Types ====================
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+        - services
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        services:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [up, down, degraded]
+            messageQueue:
+              type: string
+              enum: [up, down, degraded]
+            redis:
+              type: string
+              enum: [up, down, degraded]
+            api:
+              type: string
+              enum: [up, down, degraded]
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Error type or category
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: array
+          description: Detailed error information
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                description: Field name that caused the error
+              message:
+                type: string
+                description: Specific error message for this field
+              code:
+                type: string
+                description: Error code for programmatic handling
+
+    ValidationErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+        - validationErrors
+      properties:
+        error:
+          type: string
+          example: Validation Failed
+        message:
+          type: string
+          example: PA request failed validation
+        validationErrors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+
+    HumanName:
+      type: object
+      required:
+        - family
+      properties:
+        use:
+          type: string
+          enum: [official, usual, nickname, maiden]
+        family:
+          type: string
+          description: Family name (surname)
+        given:
+          type: array
+          description: Given names (first, middle)
+          items:
+            type: string
+        prefix:
+          type: array
+          description: Name prefix (Dr., Mr., Mrs., etc.)
+          items:
+            type: string
+        suffix:
+          type: array
+          description: Name suffix (Jr., Sr., III, etc.)
+          items:
+            type: string
+
+    Address:
+      type: object
+      required:
+        - line
+        - city
+        - state
+        - postalCode
+      properties:
+        use:
+          type: string
+          enum: [home, work, temp, billing]
+        line:
+          type: array
+          description: Street address lines
+          items:
+            type: string
+          minItems: 1
+        city:
+          type: string
+        state:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          description: Two-letter state code
+        postalCode:
+          type: string
+          pattern: '^\d{5}(-\d{4})?$'
+          description: ZIP code (5 or 9 digits)
+        country:
+          type: string
+          default: US
+
+    ContactInfo:
+      type: object
+      properties:
+        phone:
+          type: string
+          pattern: '^\+?1?[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}$'
+        email:
+          type: string
+          format: email
+        fax:
+          type: string
+          pattern: '^\+?1?[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}$'
+
+    CodeableConcept:
+      type: object
+      required:
+        - coding
+      properties:
+        coding:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+              - system
+              - code
+            properties:
+              system:
+                type: string
+                format: uri
+                description: Code system URI (e.g., http://www.ama-assn.org/go/cpt)
+              code:
+                type: string
+                description: Code value
+              display:
+                type: string
+                description: Human-readable display text
+        text:
+          type: string
+          description: Plain text representation
+
+
+    # ==================== Patient & Provider ====================
+    PatientDemographics:
+      type: object
+      required:
+        - name
+        - birthDate
+        - gender
+        - address
+      properties:
+        name:
+          $ref: '#/components/schemas/HumanName'
+        birthDate:
+          type: string
+          format: date
+          description: Date of birth (YYYY-MM-DD)
+        gender:
+          type: string
+          enum: [male, female, other, unknown]
+        address:
+          $ref: '#/components/schemas/Address'
+        telecom:
+          $ref: '#/components/schemas/ContactInfo'
+
+    Patient:
+      type: object
+      required:
+        - id
+        - demographics
+        - memberId
+        - coverageInfo
+      properties:
+        id:
+          type: string
+          description: Patient identifier
+        demographics:
+          $ref: '#/components/schemas/PatientDemographics'
+        memberId:
+          type: string
+          description: Insurance member ID
+        coverageInfo:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+              - id
+              - status
+              - payor
+            properties:
+              id:
+                type: string
+              status:
+                type: string
+                enum: [active, cancelled, draft, entered-in-error]
+              payor:
+                type: object
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                    description: Payer identifier
+                  name:
+                    type: string
+                    description: Payer name
+                  identifier:
+                    type: string
+                    description: Payer identifier code
+
+    Organization:
+      type: object
+      required:
+        - id
+        - name
+        - address
+        - active
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          description: Organization type
+        address:
+          $ref: '#/components/schemas/Address'
+        telecom:
+          $ref: '#/components/schemas/ContactInfo'
+        active:
+          type: boolean
+
+    Provider:
+      type: object
+      required:
+        - npi
+        - name
+        - organization
+        - contactInfo
+      properties:
+        npi:
+          type: string
+          pattern: '^[0-9]{10}$'
+          description: National Provider Identifier (10 digits)
+        name:
+          $ref: '#/components/schemas/HumanName'
+        organization:
+          $ref: '#/components/schemas/Organization'
+        contactInfo:
+          $ref: '#/components/schemas/ContactInfo'
+        specialty:
+          type: string
+          description: Provider specialty
+
+    ServiceRequest:
+      type: object
+      required:
+        - serviceType
+      properties:
+        serviceType:
+          $ref: '#/components/schemas/CodeableConcept'
+        diagnosis:
+          type: array
+          items:
+            type: object
+            required:
+              - code
+            properties:
+              code:
+                $ref: '#/components/schemas/CodeableConcept'
+              onsetDate:
+                type: string
+                format: date
+        procedure:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                $ref: '#/components/schemas/CodeableConcept'
+              performedDate:
+                type: string
+                format: date
+        supportingDocumentation:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              type:
+                type: string
+              url:
+                type: string
+                format: uri
+
+
+    # ==================== PA Request ====================
+    SubmissionDetails:
+      type: object
+      properties:
+        submittedAt:
+          type: string
+          format: date-time
+        submissionMethod:
+          $ref: '#/components/schemas/SubmissionMethod'
+        payerEndpoint:
+          type: string
+          format: uri
+        trackingId:
+          type: string
+          pattern: '^PA-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          description: Unique tracking identifier
+        transmissionId:
+          type: string
+          description: Protocol-specific transmission ID
+        responseReceivedAt:
+          type: string
+          format: date-time
+        responseDetails:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [accepted, rejected, pending]
+            responseCode:
+              type: string
+            responseMessage:
+              type: string
+            payerReferenceId:
+              type: string
+              description: Payer's reference number
+            receivedAt:
+              type: string
+              format: date-time
+        retryCount:
+          type: integer
+          minimum: 0
+          description: Number of retry attempts
+        lastRetryAt:
+          type: string
+          format: date-time
+
+    AutomationFlags:
+      type: object
+      required:
+        - autoPopulateEnabled
+        - autoAttachDocuments
+        - autoSubmitEnabled
+        - requiresManualReview
+        - eligibilityVerificationRequired
+      properties:
+        autoPopulateEnabled:
+          type: boolean
+          description: Whether auto-population is enabled
+        autoAttachDocuments:
+          type: boolean
+          description: Whether documents are auto-attached
+        autoSubmitEnabled:
+          type: boolean
+          description: Whether auto-submission is enabled
+        requiresManualReview:
+          type: boolean
+          description: Whether manual review is required
+        eligibilityVerificationRequired:
+          type: boolean
+          description: Whether eligibility verification is required
+        manualReviewReason:
+          type: string
+          description: Reason for manual review requirement
+
+    WorkflowState:
+      type: object
+      properties:
+        workflowId:
+          type: string
+          format: uuid
+        instanceId:
+          type: string
+          format: uuid
+        state:
+          type: string
+        currentStep:
+          type: string
+        variables:
+          type: object
+          properties:
+            autoSubmitEligible:
+              type: boolean
+            validationAttempts:
+              type: integer
+            submissionAttempts:
+              type: integer
+            lastError:
+              type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+
+    AuditTrailEntry:
+      type: object
+      required:
+        - action
+        - timestamp
+        - actorId
+      properties:
+        action:
+          type: string
+          description: Action performed
+        timestamp:
+          type: string
+          format: date-time
+        actorId:
+          type: string
+          description: ID of user or system that performed action
+        actorType:
+          type: string
+          enum: [user, system, service]
+        changes:
+          type: object
+          description: Changes made (before/after values)
+        metadata:
+          type: object
+          description: Additional context
+
+    PARequest:
+      type: object
+      required:
+        - id
+        - status
+        - priority
+        - patient
+        - requestingProvider
+        - serviceRequest
+        - automationFlags
+        - auditTrail
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PAStatus'
+        priority:
+          $ref: '#/components/schemas/Priority'
+        patient:
+          $ref: '#/components/schemas/Patient'
+        requestingProvider:
+          $ref: '#/components/schemas/Provider'
+        serviceRequest:
+          $ref: '#/components/schemas/ServiceRequest'
+        submissionDetails:
+          $ref: '#/components/schemas/SubmissionDetails'
+        workflowState:
+          $ref: '#/components/schemas/WorkflowState'
+        automationFlags:
+          $ref: '#/components/schemas/AutomationFlags'
+        auditTrail:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditTrailEntry'
+        notes:
+          type: string
+          description: Additional notes or comments
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        submittedAt:
+          type: string
+          format: date-time
+
+    CreatePARequestInput:
+      type: object
+      required:
+        - priority
+        - patient
+        - requestingProvider
+        - serviceRequest
+      properties:
+        priority:
+          $ref: '#/components/schemas/Priority'
+        patient:
+          $ref: '#/components/schemas/Patient'
+        requestingProvider:
+          $ref: '#/components/schemas/Provider'
+        serviceRequest:
+          $ref: '#/components/schemas/ServiceRequest'
+        notes:
+          type: string
+
+    UpdatePARequestInput:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/PAStatus'
+        priority:
+          $ref: '#/components/schemas/Priority'
+        notes:
+          type: string
+        serviceRequest:
+          $ref: '#/components/schemas/ServiceRequest'
+
+    PARequestList:
+      type: object
+      required:
+        - data
+        - total
+        - limit
+        - offset
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PARequest'
+        total:
+          type: integer
+          description: Total number of matching requests
+        limit:
+          type: integer
+          description: Maximum results per page
+        offset:
+          type: integer
+          description: Number of results skipped
+
+    PARequestStatus:
+      type: object
+      required:
+        - id
+        - status
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PAStatus'
+        submissionProgress:
+          type: object
+          properties:
+            retryCount:
+              type: integer
+            nextRetryAt:
+              type: string
+              format: date-time
+            lastError:
+              type: string
+        updatedAt:
+          type: string
+          format: date-time
+
+
+    # ==================== Submission ====================
+    SubmissionResult:
+      type: object
+      required:
+        - success
+        - timestamp
+      properties:
+        success:
+          type: boolean
+        trackingId:
+          type: string
+          description: Unique tracking identifier
+        payerReferenceId:
+          type: string
+          description: Payer's reference number
+        protocol:
+          $ref: '#/components/schemas/SubmissionMethod'
+        endpoint:
+          type: string
+          format: uri
+        timestamp:
+          type: string
+          format: date-time
+        payerResponse:
+          type: object
+          properties:
+            status:
+              type: string
+            message:
+              type: string
+            referenceNumber:
+              type: string
+        error:
+          $ref: '#/components/schemas/SubmissionError'
+
+    SubmissionError:
+      type: object
+      required:
+        - code
+        - message
+        - category
+        - retryable
+      properties:
+        code:
+          type: string
+          description: Error code
+        message:
+          type: string
+          description: Error message
+        category:
+          $ref: '#/components/schemas/ErrorCategory'
+        retryable:
+          type: boolean
+          description: Whether error is retryable
+        stackTrace:
+          type: string
+          description: Stack trace (for system errors)
+        details:
+          type: object
+          description: Additional error details
+
+
+    # ==================== Workflow ====================
+    RuleCondition:
+      type: object
+      description: Recursive rule condition structure supporting and/or/not logic
+      properties:
+        and:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+        or:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+        not:
+          $ref: '#/components/schemas/RuleCondition'
+        field:
+          type: string
+          description: Field path (e.g., "patient.demographics.name")
+        operator:
+          type: string
+          enum: [equals, not_equals, exists, not_exists, in, not_in, greater_than, less_than, contains]
+        value:
+          description: Value to compare against (type depends on field)
+
+    RuleAction:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [auto_submit, manual_review, validate, notify, route]
+        parameters:
+          type: object
+          description: Action-specific parameters
+
+    WorkflowRule:
+      type: object
+      required:
+        - id
+        - name
+        - ruleType
+        - conditions
+        - actions
+        - priority
+        - enabled
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Rule name
+        description:
+          type: string
+          description: Rule description
+        ruleType:
+          type: string
+          enum: [auto_submit, validation, routing, notification]
+        conditions:
+          $ref: '#/components/schemas/RuleCondition'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleAction'
+        priority:
+          type: integer
+          description: Rule priority (higher = evaluated first)
+          minimum: 0
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateWorkflowRuleInput:
+      type: object
+      required:
+        - name
+        - ruleType
+        - conditions
+        - actions
+        - priority
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        ruleType:
+          type: string
+          enum: [auto_submit, validation, routing, notification]
+        conditions:
+          $ref: '#/components/schemas/RuleCondition'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleAction'
+        priority:
+          type: integer
+          minimum: 0
+        enabled:
+          type: boolean
+          default: true
+
+    UpdateWorkflowRuleInput:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        conditions:
+          $ref: '#/components/schemas/RuleCondition'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleAction'
+        priority:
+          type: integer
+          minimum: 0
+        enabled:
+          type: boolean
+
+
+    # ==================== Payer Endpoints ====================
+    AuthenticationConfig:
+      type: object
+      required:
+        - type
+        - credentials
+      properties:
+        type:
+          type: string
+          enum: [oauth2, api_key, basic, mtls]
+        credentials:
+          type: object
+          description: Authentication credentials (structure depends on type)
+          additionalProperties: true
+
+    PayerCapabilities:
+      type: object
+      required:
+        - supportsEligibilityCheck
+        - supportsStatusPolling
+        - supportsCancellation
+        - maxRetries
+        - timeoutSeconds
+      properties:
+        supportsEligibilityCheck:
+          type: boolean
+        supportsStatusPolling:
+          type: boolean
+        supportsCancellation:
+          type: boolean
+        maxRetries:
+          type: integer
+          minimum: 0
+          maximum: 10
+        timeoutSeconds:
+          type: integer
+          minimum: 10
+          maximum: 120
+
+    PayerEndpoint:
+      type: object
+      required:
+        - id
+        - payerId
+        - payerName
+        - supportsFHIR
+        - supportsX12
+        - capabilities
+        - authentication
+        - enabled
+      properties:
+        id:
+          type: string
+          format: uuid
+        payerId:
+          type: string
+          description: Unique payer identifier
+        payerName:
+          type: string
+          description: Payer display name
+        fhirEndpoint:
+          type: string
+          format: uri
+          description: FHIR endpoint URL
+        x12Endpoint:
+          type: string
+          format: uri
+          description: X12 EDI gateway URL
+        supportsFHIR:
+          type: boolean
+        supportsX12:
+          type: boolean
+        supportsEligibilityCheck:
+          type: boolean
+        capabilities:
+          $ref: '#/components/schemas/PayerCapabilities'
+        authentication:
+          $ref: '#/components/schemas/AuthenticationConfig'
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreatePayerEndpointInput:
+      type: object
+      required:
+        - payerId
+        - payerName
+        - supportsFHIR
+        - supportsX12
+        - capabilities
+        - authentication
+      properties:
+        payerId:
+          type: string
+        payerName:
+          type: string
+        fhirEndpoint:
+          type: string
+          format: uri
+        x12Endpoint:
+          type: string
+          format: uri
+        supportsFHIR:
+          type: boolean
+        supportsX12:
+          type: boolean
+        supportsEligibilityCheck:
+          type: boolean
+          default: false
+        capabilities:
+          $ref: '#/components/schemas/PayerCapabilities'
+        authentication:
+          $ref: '#/components/schemas/AuthenticationConfig'
+        enabled:
+          type: boolean
+          default: true
+
+    UpdatePayerEndpointInput:
+      type: object
+      properties:
+        payerName:
+          type: string
+        fhirEndpoint:
+          type: string
+          format: uri
+        x12Endpoint:
+          type: string
+          format: uri
+        supportsFHIR:
+          type: boolean
+        supportsX12:
+          type: boolean
+        supportsEligibilityCheck:
+          type: boolean
+        capabilities:
+          $ref: '#/components/schemas/PayerCapabilities'
+        authentication:
+          $ref: '#/components/schemas/AuthenticationConfig'
+        enabled:
+          type: boolean
+
+
+    # ==================== Retry Management ====================
+    RetryEntry:
+      type: object
+      required:
+        - id
+        - requestId
+        - retryCount
+        - maxRetries
+        - nextRetryAt
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+          description: PA request ID
+        retryCount:
+          type: integer
+          minimum: 0
+          description: Current retry attempt number
+        maxRetries:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Maximum retry attempts allowed
+        nextRetryAt:
+          type: string
+          format: date-time
+          description: Scheduled time for next retry
+        lastError:
+          type: string
+          description: Last error message
+        errorDetails:
+          $ref: '#/components/schemas/SubmissionError'
+        status:
+          $ref: '#/components/schemas/RetryStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    # ==================== Validation ====================
+    ValidationError:
+      type: object
+      required:
+        - field
+        - code
+        - message
+        - severity
+      properties:
+        field:
+          type: string
+          description: Field path that failed validation
+        code:
+          type: string
+          description: Error code for programmatic handling
+        message:
+          type: string
+          description: Human-readable error message
+        severity:
+          type: string
+          enum: [error, warning]
+
+    ValidationWarning:
+      type: object
+      required:
+        - field
+        - message
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+
+    ValidationResult:
+      type: object
+      required:
+        - valid
+        - errors
+        - warnings
+        - timestamp
+      properties:
+        valid:
+          type: boolean
+          description: Whether validation passed
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationWarning'
+        timestamp:
+          type: string
+          format: date-time
+
+    ValidationRule:
+      type: object
+      required:
+        - id
+        - name
+        - ruleType
+        - enabled
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        ruleType:
+          type: string
+          enum: [cms_compliance, payer_specific, data_format, business_rule]
+        payerId:
+          type: string
+          description: Payer ID for payer-specific rules
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+
+    # ==================== Audit ====================
+    AuditEntry:
+      type: object
+      required:
+        - id
+        - entityType
+        - entityId
+        - action
+        - actorId
+        - actorType
+        - timestamp
+      properties:
+        id:
+          type: string
+          format: uuid
+        entityType:
+          type: string
+          enum: [pa_request, workflow, submission, retry, configuration]
+        entityId:
+          type: string
+          format: uuid
+        action:
+          type: string
+          description: Action performed (e.g., created, updated, submitted)
+        actorId:
+          type: string
+          description: ID of user or system that performed action
+        actorType:
+          type: string
+          enum: [user, system, service]
+        timestamp:
+          type: string
+          format: date-time
+        changes:
+          type: object
+          description: Before/after values for changes
+        metadata:
+          type: object
+          description: Additional context
+          properties:
+            rulesEvaluated:
+              type: array
+              items:
+                type: string
+            ruleMatched:
+              type: string
+            validationErrors:
+              type: array
+              items:
+                $ref: '#/components/schemas/ValidationError'
+            protocol:
+              $ref: '#/components/schemas/SubmissionMethod'
+            endpoint:
+              type: string
+            trackingId:
+              type: string
+            payerReferenceId:
+              type: string
+            retryCount:
+              type: integer
+            nextRetryAt:
+              type: string
+              format: date-time
+            errorCategory:
+              $ref: '#/components/schemas/ErrorCategory'
+            payerId:
+              type: string
+            payerName:
+              type: string
+        ipAddress:
+          type: string
+          description: IP address of actor (for user actions)
+        userAgent:
+          type: string
+          description: User agent string (for user actions)
+
+    # ==================== Configuration ====================
+    SystemConfiguration:
+      type: object
+      properties:
+        workflow:
+          type: object
+          properties:
+            autoSubmitEnabled:
+              type: boolean
+            defaultPriority:
+              $ref: '#/components/schemas/Priority'
+            validationTimeout:
+              type: integer
+              description: Validation timeout in seconds
+        submission:
+          type: object
+          properties:
+            preferredProtocol:
+              $ref: '#/components/schemas/SubmissionMethod'
+            fhirTimeout:
+              type: integer
+              description: FHIR submission timeout in seconds
+            x12Timeout:
+              type: integer
+              description: X12 submission timeout in seconds
+        retry:
+          type: object
+          properties:
+            maxRetries:
+              type: integer
+              minimum: 1
+              maximum: 10
+            initialDelaySeconds:
+              type: integer
+              minimum: 30
+            backoffMultiplier:
+              type: number
+              minimum: 1.5
+            maxDelaySeconds:
+              type: integer
+        rateLimit:
+          type: object
+          properties:
+            requestsPerWindow:
+              type: integer
+            windowSeconds:
+              type: integer
+        audit:
+          type: object
+          properties:
+            retentionDays:
+              type: integer
+            redactPHI:
+              type: boolean
